@@ -92,18 +92,65 @@ double node_dens(Lattice::index_t index) {
   return lbpar.density + modes[0];
 }
 
+#ifdef LB_BOUNDARIES
+/* Velocity along one z-pair of the interpolation cell (lower node lo, upper
+   node hi), at fractional height s in [0, 1] above lo.
+   With halfway bounce-back the physical wall lies midway between a boundary
+   node and its fluid neighbour, so the wall velocity is applied at s = 0.5
+   instead of at the boundary node centre. Positions behind the wall get the
+   wall velocity. Only z-walls are treated exactly (nearwall-fix patch). */
+Utils::Vector3d z_pair_velocity(Lattice::index_t lo, Lattice::index_t hi,
+                                double s) {
+  auto const b_lo = lbfields[lo].boundary;
+  auto const b_hi = lbfields[hi].boundary;
+  if (b_lo and b_hi) {
+    return lbfields[lo].slip_velocity;
+  }
+  if (b_lo) {
+    auto const u_wall = lbfields[lo].slip_velocity;
+    if (s <= 0.5) {
+      return u_wall;
+    }
+    return u_wall + (node_u(hi) - u_wall) * (2. * s - 1.);
+  }
+  if (b_hi) {
+    auto const u_wall = lbfields[hi].slip_velocity;
+    if (s >= 0.5) {
+      return u_wall;
+    }
+    return u_wall + (node_u(lo) - u_wall) * (1. - 2. * s);
+  }
+  return (1. - s) * node_u(lo) + s * node_u(hi);
+}
+#endif // LB_BOUNDARIES
+
 } // namespace
 
 const Utils::Vector3d
 lb_lbinterpolation_get_interpolated_velocity(const Utils::Vector3d &pos) {
   Utils::Vector3d interpolated_u{};
 
+#ifdef LB_BOUNDARIES
+  /* Bilinear in x and y, wall-aware linear in z (see z_pair_velocity). */
+  Utils::Vector<std::size_t, 8> node_index{};
+  Utils::Vector6d delta{};
+  lblattice.map_position_to_lattice(pos, node_index, delta);
+  for (int y = 0; y < 2; y++) {
+    for (int x = 0; x < 2; x++) {
+      auto const w_xy = delta[3 * x + 0] * delta[3 * y + 1];
+      auto const lo = static_cast<Lattice::index_t>(node_index[y * 2 + x]);
+      auto const hi = static_cast<Lattice::index_t>(node_index[4 + y * 2 + x]);
+      interpolated_u += w_xy * z_pair_velocity(lo, hi, delta[5]);
+    }
+  }
+#else
   /* Calculate fluid velocity at particle's position.
      This is done by linear interpolation (eq. (11) @cite ahlrichs99a) */
   lattice_interpolation(lblattice, pos,
                         [&interpolated_u](Lattice::index_t index, double w) {
                           interpolated_u += w * node_u(index);
                         });
+#endif // LB_BOUNDARIES
 
   return interpolated_u;
 }
