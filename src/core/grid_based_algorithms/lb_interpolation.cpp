@@ -174,12 +174,38 @@ void lb_lbinterpolation_add_force_density(
   case (InterpolationOrder::quadratic):
     throw std::runtime_error("The non-linear interpolation scheme is not "
                              "implemented for the CPU LB.");
-  case (InterpolationOrder::linear):
+  case (InterpolationOrder::linear): {
+#ifdef LB_BOUNDARIES
+    /* Boundary nodes are skipped in the collision, so force density put on
+       them is lost. In a z-pair with one boundary node, give that node's share
+       to its fluid partner, so the full force reaches the fluid
+       (nearwall-fix patch). Only z-walls are treated. */
+    Utils::Vector<std::size_t, 8> node_index{};
+    Utils::Vector6d delta{};
+    lblattice.map_position_to_lattice(pos, node_index, delta);
+    for (int y = 0; y < 2; y++) {
+      for (int x = 0; x < 2; x++) {
+        auto const w_xy = delta[3 * x + 0] * delta[3 * y + 1];
+        auto &lo = lbfields[node_index[y * 2 + x]];
+        auto &hi = lbfields[node_index[4 + y * 2 + x]];
+        if (lo.boundary and not hi.boundary) {
+          hi.force_density += w_xy * force_density;
+        } else if (hi.boundary and not lo.boundary) {
+          lo.force_density += w_xy * force_density;
+        } else {
+          lo.force_density += w_xy * delta[2] * force_density;
+          hi.force_density += w_xy * delta[5] * force_density;
+        }
+      }
+    }
+#else
     lattice_interpolation(lblattice, pos,
                           [&force_density](Lattice::index_t index, double w) {
                             auto &field = lbfields[index];
                             field.force_density += w * force_density;
                           });
+#endif // LB_BOUNDARIES
     break;
+  }
   }
 }
